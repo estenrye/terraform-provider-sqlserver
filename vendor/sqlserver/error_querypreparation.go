@@ -4,7 +4,7 @@ import (
 	"fmt"
 )
 
-// Custom error class for reporting Query Preparation Errors
+// QueryPreparationError is a custom error class for reporting Query Preparation Errors
 type QueryPreparationError struct {
 	Query      string
 	InnerError error

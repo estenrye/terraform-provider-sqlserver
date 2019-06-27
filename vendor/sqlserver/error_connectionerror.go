@@ -4,7 +4,7 @@ import (
 	"fmt"
 )
 
-// Custom error class for reporting Query Preparation Errors
+// ConnectionError Custom error class for reporting Query Preparation Errors
 type ConnectionError struct {
 	ConnectionString string
 	InnerError       error
