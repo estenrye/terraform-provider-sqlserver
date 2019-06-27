@@ -29,7 +29,10 @@ func resourceDatabase() *schema.Resource {
 
 func resourceDatabaseExecuteQuery(d *schema.ResourceData, m interface{}, queryTemplate string) (string, error) {
 	client := m.(*sqlServerClient)
-	dbName := cleanDatabaseName(d)
+	dbName, err := cleanDatabaseName(d)
+	if err != nil {
+		return "", err
+	}
 
 	conn, err := sql.Open("mssql", client.connectionString)
 	if err != nil {
@@ -65,19 +68,31 @@ func resourceDatabaseExecuteQuery(d *schema.ResourceData, m interface{}, queryTe
 	return dbID, nil
 }
 
-func cleanDatabaseName(d *schema.ResourceData) string {
-	databaseName := d.Get("database_name").(string)
-	databaseName = strings.TrimSpace(databaseName)
-	databaseName = strings.ReplaceAll(databaseName, "\n", "")
-	databaseName = strings.ReplaceAll(databaseName, "\r", "")
-	databaseName = strings.ReplaceAll(databaseName, "[", "")
-	databaseName = strings.ReplaceAll(databaseName, "]", "")
+func cleanDatabaseName(d *schema.ResourceData) (string, error) {
+	specifiedDatabaseName := d.Get("database_name").(string)
+	cleanDatabaseName := strings.TrimSpace(specifiedDatabaseName)
 
-	return databaseName
+	cleanDatabaseName = strings.ReplaceAll(cleanDatabaseName, "\n", "")
+	cleanDatabaseName = strings.ReplaceAll(cleanDatabaseName, "\r", "")
+	cleanDatabaseName = strings.ReplaceAll(cleanDatabaseName, "[", "")
+	cleanDatabaseName = strings.ReplaceAll(cleanDatabaseName, "]", "")
+
+	if specifiedDatabaseName != cleanDatabaseName {
+		return "", InvalidIdentifierError{
+			IdentifierType: "Database Name",
+			FilterSet:      `Leading or Trailing Whitespace, Newlines, and/or '[' or ']' characters.`,
+		}
+	}
+
+	return specifiedDatabaseName, nil
 }
 
 func resourceDatabaseCreate(d *schema.ResourceData, m interface{}) error {
-	dbName := cleanDatabaseName(d)
+	dbName, err := cleanDatabaseName(d)
+	if err != nil {
+		d.SetId("")
+		return err
+	}
 
 	createTemplate := `USE master
 	IF (ISNULL(DB_ID($1), -1) = -1)
@@ -94,6 +109,12 @@ func resourceDatabaseCreate(d *schema.ResourceData, m interface{}) error {
 }
 
 func resourceDatabaseRead(d *schema.ResourceData, m interface{}) error {
+	_, err := cleanDatabaseName(d)
+	if err != nil {
+		d.SetId("")
+		return err
+	}
+
 	readTemplate := `USE master
 	SELECT ISNULL(DB_ID($1), -1)
 	`
@@ -105,7 +126,11 @@ func resourceDatabaseRead(d *schema.ResourceData, m interface{}) error {
 }
 
 func resourceDatabaseDelete(d *schema.ResourceData, m interface{}) error {
-	dbName := cleanDatabaseName(d)
+	dbName, err := cleanDatabaseName(d)
+	if err != nil {
+		d.SetId("")
+		return err
+	}
 
 	deleteTemplate := `USE master
 	IF (ISNULL(DB_ID($1), -1) <> -1)
