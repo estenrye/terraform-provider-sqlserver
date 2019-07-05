@@ -40,6 +40,7 @@ func Provider() terraform.ResourceProvider {
 		},
 		ResourcesMap: map[string]*schema.Resource{
 			"sqlserver_database": resourceDatabase(),
+			"sqlserver_sqllogin": resourceSQLLogin(),
 		},
 
 		ConfigureFunc: providerConfigure,
