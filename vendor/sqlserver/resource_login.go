@@ -18,19 +18,31 @@ func resourceSQLLogin() *schema.Resource {
 		// See https://www.terraform.io/docs/plugins/provider.html#resources
 
 		Schema: map[string]*schema.Schema{
-			"login_name": &schema.Schema{
+			"name": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"login_sid": &schema.Schema{
+			"sid": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
 			},
-			"login_password_hash": &schema.Schema{
+			"password_hash": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
+				ForceNew: false,
+			},
+			"check_policy": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
+				ForceNew: false,
+			},
+			"check_expiration": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
 				ForceNew: false,
 			},
 		},
@@ -39,13 +51,26 @@ func resourceSQLLogin() *schema.Resource {
 
 func resourceSQLLoginCreate(d *schema.ResourceData, m interface{}) error {
 	data := login{
-		Name:         d.Get("login_name").(string),
-		PasswordHash: d.Get("login_password_hash").(string),
-		SID:          cleanString(d.Get("login_sid").(string)),
+		Name:            d.Get("name").(string),
+		PasswordHash:    d.Get("password_hash").(string),
+		SID:             cleanString(d.Get("sid").(string)),
+		CheckPolicy:     d.Get("check_policy").(bool),
+		CheckExpiration: d.Get("check_expiration").(bool),
 	}
 
 	quotedLogin, err := cleanIdentifier(data.Name, "Login")
-	template := `CREATE LOGIN [` + quotedLogin + `] WITH PASSWORD = ` + data.PasswordHash + ` HASHED`
+	checkPolicy := `OFF`
+	if data.CheckPolicy {
+		checkPolicy = `ON`
+	}
+	checkExpiration := `OFF`
+	if data.CheckExpiration {
+		checkExpiration = `ON`
+	}
+	template := `CREATE LOGIN [` + quotedLogin +
+		`] WITH PASSWORD = ` + data.PasswordHash +
+		` HASHED, CHECK_POLICY = ` + checkPolicy +
+		`, CHECK_EXPIRATION = ` + checkExpiration
 
 	if data.SID != "" {
 		template += `, SID = ` + data.SID
@@ -94,7 +119,7 @@ func resourceSQLLoginCreate(d *schema.ResourceData, m interface{}) error {
 
 func resourceSQLLoginRead(d *schema.ResourceData, m interface{}) error {
 	template := `USE master
-	SELECT name, principal_id, sid, CONVERT(VARCHAR(512), password_hash, 1) FROM sys.sql_logins WHERE name = $1
+	SELECT name, principal_id, sid, CONVERT(VARCHAR(512), password_hash, 1), is_policy_checked, is_expiration_checked FROM sys.sql_logins WHERE name = $1
 	`
 
 	log.Println(template)
@@ -116,10 +141,11 @@ func resourceSQLLoginRead(d *schema.ResourceData, m interface{}) error {
 		}
 	}
 
-	row := stmt.QueryRow(d.Get("login_name").(string))
+	row := stmt.QueryRow(d.Get("name").(string))
 
 	var result login
-	err = row.Scan(&result.Name, &result.ID, &result.SID, &result.PasswordHash)
+	err = row.Scan(&result.Name, &result.ID, &result.SID, &result.PasswordHash,
+		&result.CheckPolicy, &result.CheckExpiration)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil
@@ -128,21 +154,23 @@ func resourceSQLLoginRead(d *schema.ResourceData, m interface{}) error {
 	}
 
 	d.SetId(result.ID)
-	d.Set("login_name", result.Name)
-	sID := d.Get("login_name").(string)
+	d.Set("name", result.Name)
+	sID := d.Get("name").(string)
 	if sID == "" {
-		d.Set("login_sid", result.SID)
+		d.Set("sid", result.SID)
 	}
-	d.Set("login_password_hash", result.PasswordHash)
+	d.Set("password_hash", result.PasswordHash)
 
 	return err
 }
 
 func resourceSQLLoginDelete(d *schema.ResourceData, m interface{}) error {
 	data := login{
-		Name:         d.Get("login_name").(string),
-		PasswordHash: d.Get("login_password_hash").(string),
-		SID:          d.Get("login_sid").(string),
+		Name:            d.Get("name").(string),
+		PasswordHash:    d.Get("password_hash").(string),
+		SID:             d.Get("sid").(string),
+		CheckPolicy:     d.Get("check_policy").(bool),
+		CheckExpiration: d.Get("check_expiration").(bool),
 	}
 
 	deleteTemplate := `USE master
@@ -158,29 +186,70 @@ func resourceSQLLoginDelete(d *schema.ResourceData, m interface{}) error {
 }
 
 type login struct {
-	Name         string
-	PasswordHash string
-	SID          string
-	ID           string
+	Name            string
+	PasswordHash    string
+	SID             string
+	ID              string
+	CheckPolicy     bool
+	CheckExpiration bool
 }
 
 func resourceSQLLoginUpdate(d *schema.ResourceData, m interface{}) error {
 	data := login{
-		Name:         d.Get("login_name").(string),
-		PasswordHash: d.Get("login_password_hash").(string),
-		SID:          cleanString(d.Get("login_sid").(string)),
+		Name:            d.Get("name").(string),
+		PasswordHash:    d.Get("password_hash").(string),
+		SID:             cleanString(d.Get("sid").(string)),
+		CheckPolicy:     d.Get("check_policy").(bool),
+		CheckExpiration: d.Get("check_expiration").(bool),
+	}
+	quotedLogin, err := cleanIdentifier(data.Name, "Login")
+	checkPolicy := `OFF`
+	if data.CheckPolicy {
+		checkPolicy = `ON`
+	}
+	checkExpiration := `OFF`
+	if data.CheckExpiration {
+		checkExpiration = `ON`
 	}
 
-	updateTemplate := `DECLARE @login NVARCHAR(128) = 'helloUser43'
-	DECLARE @pass NVARCHAR(128) = 'passworD''1235'
-	DECLARE @sql nvarchar(300) = 'ALTER LOGIN ' + QUOTENAME(@login) + ' WITH PASSWORD = ' + QUOTENAME(@pass, '''')
-	EXEC sp_sqlexec @sql
-	`
+	template := `ALTER LOGIN [` + quotedLogin + `] WITH PASSWORD = ` +
+		data.PasswordHash + ` HASHED, CHECK_POLICY = ` + checkPolicy +
+		`, CHECK_EXPIRATION = ` + checkExpiration + `;`
+	template += `SELECT ISNULL(SUSER_ID('` + cleanString(data.Name) + `'), -1)`
 
-	log.Println(`[Trace] ` + updateTemplate)
+	client := m.(*sqlServerClient)
+	conn, err := sql.Open("mssql", client.connectionString)
+	if err != nil {
+		return ConnectionError{
+			ConnectionString: client.connectionString,
+			InnerError:       err,
+		}
+	}
 
-	dbID, err := executeQuery(m, "Login", updateTemplate, data.Name, data.PasswordHash)
+	stmt, err := conn.Prepare(template)
+	if err != nil {
+		return QueryPreparationError{
+			Query:      template,
+			InnerError: err,
+		}
+	}
 
+	row := stmt.QueryRow()
+
+	var dbID string
+	err = row.Scan(&dbID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+
+	if dbID == "-1" {
+		dbID = ""
+	}
+
+	log.Println(`Id: ` + dbID)
 	d.SetId(dbID)
 	return err
 }
