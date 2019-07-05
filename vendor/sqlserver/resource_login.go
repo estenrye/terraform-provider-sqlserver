@@ -1,13 +1,16 @@
 package sqlserver
 
 import (
+	"database/sql"
 	"github.com/hashicorp/terraform/helper/schema"
+	"log"
+	// driver for database/sql
+	_ "github.com/denisenkom/go-mssqldb"
 )
 
 func resourceSQLLogin() *schema.Resource {
 	return &schema.Resource{
 		Create: resourceSQLLoginCreate,
-		Exists: resourceSQLLoginExists,
 		Read:   resourceSQLLoginRead,
 		Delete: resourceSQLLoginDelete,
 		Update: resourceSQLLoginUpdate,
@@ -25,10 +28,9 @@ func resourceSQLLogin() *schema.Resource {
 				Optional: true,
 				ForceNew: true,
 			},
-			"login_password": &schema.Schema{
+			"login_password_hash": &schema.Schema{
 				Type:     schema.TypeString,
-				Optional: true,
-				Default:  "",
+				Required: true,
 				ForceNew: false,
 			},
 		},
@@ -37,90 +39,110 @@ func resourceSQLLogin() *schema.Resource {
 
 func resourceSQLLoginCreate(d *schema.ResourceData, m interface{}) error {
 	data := login{
-		Name:     d.Get("login_name").(string),
-		Password: d.Get("login_password").(string),
-		SID:      cleanString(d.Get("login_sid").(string)),
+		Name:         d.Get("login_name").(string),
+		PasswordHash: d.Get("login_password_hash").(string),
+		SID:          cleanString(d.Get("login_sid").(string)),
 	}
 
-	// createTemplate := `USE master
-	// DECLARE @login NVARCHAR(128) = $1
-	// DECLARE @pass NVARCHAR(128) = $2
-	// `
-
-	// if data.SID != "" {
-	// 	createTemplate += `DECLARE @sid VARBINARY(16) = $3
-	// 	`
-	// }
-
-	createTemplate := `DECLARE @sql nvarchar(400) = 'CREATE LOGIN ' + QUOTENAME($1) + ' WITH PASSWORD = ' + QUOTENAME($2, '''')`
+	quotedLogin, err := cleanIdentifier(data.Name, "Login")
+	template := `CREATE LOGIN [` + quotedLogin + `] WITH PASSWORD = ` + data.PasswordHash + ` HASHED`
 
 	if data.SID != "" {
-		createTemplate += `+ ', SID = ' + $3
-		`
+		template += `, SID = ` + data.SID
 	}
 
-	createTemplate += `EXEC sp_sqlexec @sql
-	SELECT ISNULL(SUSER_ID($1), -1)
-	`
+	template += `; SELECT ISNULL(SUSER_ID('` + cleanString(data.Name) + `'), -1)`
+
+	log.Println(template)
+
+	client := m.(*sqlServerClient)
+	conn, err := sql.Open("mssql", client.connectionString)
+	if err != nil {
+		return ConnectionError{
+			ConnectionString: client.connectionString,
+			InnerError:       err,
+		}
+	}
+
+	stmt, err := conn.Prepare(template)
+	if err != nil {
+		return QueryPreparationError{
+			Query:      template,
+			InnerError: err,
+		}
+	}
+
+	row := stmt.QueryRow()
 
 	var dbID string
-	var err error
-	if data.SID == "" {
-		dbID, err = executeQuery(m, "Login", createTemplate, data.Name, data.Password)
-	} else {
-		dbID, err = executeQuery(m, "Login", createTemplate, data.Name, data.Password, data.SID)
+	err = row.Scan(&dbID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
 	}
 
+	if dbID == "-1" {
+		dbID = ""
+	}
+
+	log.Println(`Id: ` + dbID)
 	d.SetId(dbID)
 	return err
 }
 
 func resourceSQLLoginRead(d *schema.ResourceData, m interface{}) error {
-	data := login{
-		Name:     d.Get("login_name").(string),
-		Password: d.Get("login_password").(string),
-		SID:      d.Get("login_sid").(string),
-	}
-
-	readTemplate := `USE master
-	SELECT ISNULL(SUSER_ID($1), -1)
+	template := `USE master
+	SELECT name, principal_id, sid, CONVERT(VARCHAR(512), password_hash, 1) FROM sys.sql_logins WHERE name = $1
 	`
 
-	dbID, err := executeQuery(m, "Login", readTemplate, data.Name)
+	log.Println(template)
 
-	d.SetId(dbID)
-	return err
-}
-
-func resourceSQLLoginExists(d *schema.ResourceData, m interface{}) (bool, error) {
-	data := login{
-		Name:     d.Get("login_name").(string),
-		Password: d.Get("login_password").(string),
-		SID:      d.Get("login_sid").(string),
-	}
-
-	readTemplate := `USE master
-	SELECT ISNULL(SUSER_ID($1), -1)
-	`
-
-	dbID, err := executeQuery(m, "Login", readTemplate, data.Name)
-
+	client := m.(*sqlServerClient)
+	conn, err := sql.Open("mssql", client.connectionString)
 	if err != nil {
-		return false, err
+		return ConnectionError{
+			ConnectionString: client.connectionString,
+			InnerError:       err,
+		}
 	}
 
-	if dbID != "-1" {
-		return false, nil
+	stmt, err := conn.Prepare(template)
+	if err != nil {
+		return QueryPreparationError{
+			Query:      template,
+			InnerError: err,
+		}
 	}
 
-	return true, nil
+	row := stmt.QueryRow(d.Get("login_name").(string))
+
+	var result login
+	err = row.Scan(&result.Name, &result.ID, &result.SID, &result.PasswordHash)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+
+	d.SetId(result.ID)
+	d.Set("login_name", result.Name)
+	sID := d.Get("login_name").(string)
+	if sID == "" {
+		d.Set("login_sid", result.SID)
+	}
+	d.Set("login_password_hash", result.PasswordHash)
+
+	return err
 }
 
 func resourceSQLLoginDelete(d *schema.ResourceData, m interface{}) error {
 	data := login{
-		Name:     d.Get("login_name").(string),
-		Password: d.Get("login_password").(string),
-		SID:      d.Get("login_sid").(string),
+		Name:         d.Get("login_name").(string),
+		PasswordHash: d.Get("login_password_hash").(string),
+		SID:          d.Get("login_sid").(string),
 	}
 
 	deleteTemplate := `USE master
@@ -128,6 +150,7 @@ func resourceSQLLoginDelete(d *schema.ResourceData, m interface{}) error {
 	DECLARE @sql nvarchar(200) = 'DROP LOGIN ' + QUOTENAME(@login)
 	EXEC sp_sqlexec @sql`
 
+	log.Println(`[Trace] ` + deleteTemplate)
 	dbID, err := executeQuery(m, "Login", deleteTemplate, data.Name)
 
 	d.SetId(dbID)
@@ -135,16 +158,17 @@ func resourceSQLLoginDelete(d *schema.ResourceData, m interface{}) error {
 }
 
 type login struct {
-	Name     string
-	Password string
-	SID      string
+	Name         string
+	PasswordHash string
+	SID          string
+	ID           string
 }
 
 func resourceSQLLoginUpdate(d *schema.ResourceData, m interface{}) error {
 	data := login{
-		Name:     d.Get("login_name").(string),
-		Password: d.Get("login_password").(string),
-		SID:      cleanString(d.Get("login_sid").(string)),
+		Name:         d.Get("login_name").(string),
+		PasswordHash: d.Get("login_password_hash").(string),
+		SID:          cleanString(d.Get("login_sid").(string)),
 	}
 
 	updateTemplate := `DECLARE @login NVARCHAR(128) = 'helloUser43'
@@ -153,7 +177,9 @@ func resourceSQLLoginUpdate(d *schema.ResourceData, m interface{}) error {
 	EXEC sp_sqlexec @sql
 	`
 
-	dbID, err := executeQuery(m, "Login", updateTemplate, data.Name, data.Password)
+	log.Println(`[Trace] ` + updateTemplate)
+
+	dbID, err := executeQuery(m, "Login", updateTemplate, data.Name, data.PasswordHash)
 
 	d.SetId(dbID)
 	return err
