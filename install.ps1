@@ -8,6 +8,8 @@ param(
 $BIN_PATH="${GOPATH}/bin/${PROVIDER_NAME}.exe"
 $SRC_PATH=$PSScriptRoot
 
+Push-Location $SRC_PATH
+
 if ($skipGet)
 {
   $PROVIDER_REPO=""
@@ -16,10 +18,9 @@ else
 {
   $PROVIDER_REPO="github.com/${GITHUB_USER}/${PROVIDER_NAME}"
   New-Item -ItemType Directory ${GOPATH} -Force | Out-Null
-  go get ${PROVIDER_REPO}
 }
 
-Push-Location $SRC_PATH
+go get ${PROVIDER_REPO}
 Remove-Item ${BIN_PATH}
 go build
 go install

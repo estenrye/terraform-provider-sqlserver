@@ -2,9 +2,10 @@ package sqlserver
 
 import (
 	"fmt"
+	"net/url"
+
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/terraform"
-	"net/url"
 )
 
 // Provider returns a terraform.ResourceProvider.
@@ -39,8 +40,9 @@ func Provider() terraform.ResourceProvider {
 			},
 		},
 		ResourcesMap: map[string]*schema.Resource{
-			"sqlserver_database": resourceDatabase(),
-			"sqlserver_sqllogin": resourceSQLLogin(),
+			"sqlserver_database":     resourceDatabase(),
+			"sqlserver_sqllogin":     resourceSQLLogin(),
+			"sqlserver_databaseuser": resourceSQLDBUser(),
 		},
 
 		ConfigureFunc: providerConfigure,
